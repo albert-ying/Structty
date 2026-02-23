@@ -13,6 +13,7 @@ class Parameters{
     private:
         bool show_structure = false;
         bool predict_structure = false;
+        bool sixel = false;
         bool arg_okay = true;
         int width = 3;
         int height = 3;
@@ -71,5 +72,8 @@ class Parameters{
         }
         bool check_arg_okay(){
             return arg_okay;
+        }
+        bool get_sixel(){
+            return sixel;
         }
 };

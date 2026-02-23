@@ -21,6 +21,7 @@ void print_help(){
     std::cout<<"-h, --height\n\t1. 3 (default)\n\t2. User input above 0, below 2000"<<std::endl;
     std::cout<<"-s, --structure:\n\tshow secondary structure (alpha helix, beta sheet)"<<std::endl;
     std::cout<<"-p, --predict:\n\tshow secondary structure with prediction if it is not described in the input file"<<std::endl;
+    std::cout<<"--sixel:\n\trender using Sixel graphics (requires Sixel-capable terminal like iTerm2)"<<std::endl;
     std::cout<<"-ut, --utmatrix:\n\trotate and translate, see example/utfile"<<std::endl;
 }
 Parameters::Parameters(int argc, char* argv[]) {
@@ -114,6 +115,9 @@ Parameters::Parameters(int argc, char* argv[]) {
             else if (!strcmp(argv[i], "-p") || !strcmp(argv[i], "--predict")) {
                 predict_structure = true;
             }
+            else if (!strcmp(argv[i], "--sixel")) {
+                sixel = true;
+            }
             else if (!strcmp(argv[i], "-ut") || !strcmp(argv[i], "--utmatrix")) {
                 if (i + 1 < argc) {
                     utmatrix = argv[++i];
@@ -159,6 +163,7 @@ void Parameters::print_args() {
     cout << "  utmatrix: " << utmatrix << endl;
     cout << "  chainfile: " << chainfile << endl;
     cout << "  show_structure: " << show_structure << endl;
+    cout << "  sixel: " << sixel << endl;
 
     cout << "\n";
     return;
