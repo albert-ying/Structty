@@ -39,8 +39,9 @@ public:
 private:
     int term_cols = 80;
     int term_rows = 24;
-    int buf_width;   // = term_cols
-    int buf_height;  // = term_rows * 2 (half-block doubles vertical res)
+    int info_rows = 3;
+    int buf_width;   // = term_cols * 2 (braille: 2 dots per cell width)
+    int buf_height;  // = (term_rows - info_rows) * 4 (braille: 4 dots per cell height)
 
     void query_terminal_size();
 
@@ -51,7 +52,7 @@ private:
     RGB bg_color;
     RGB fg_color;
     void load_pywal_colors();
-    RGB interpolate_color(float t);  // t in [0,1] along backbone
+    RGB interpolate_color(float t);
 
     // Data
     std::vector<Protein*> data;
@@ -65,13 +66,12 @@ private:
     std::string screen_mode;
     bool screen_show_structure;
     int structNum = -1;
-    float zoom_level = 2.0f;
+    float zoom_level = 2.8f;
     float focal_offset = 5.0f;
 
     // Auto-rotation
     bool auto_rotate = true;
-    float rotation_angle = 0.0f;
-    float rotation_speed = 0.025f;  // radians per frame
+    float rotation_speed = 0.02f;
 
     void auto_rotate_step();
     void project();
@@ -84,10 +84,9 @@ private:
     void plot_pixel(int x, int y, float z, RGB color, float brightness);
 
     RGB depth_shade(RGB color, float brightness);
-
     RGB get_color_for_point(int point_idx, int total_points);
 
-    void render_halfblocks();
+    void render_braille();
     void draw_info_overlay();
 
     bool raw_mode_active = false;

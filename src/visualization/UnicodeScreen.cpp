@@ -28,12 +28,18 @@ void UnicodeScreen::enter_raw_mode() {
     // Hide cursor, alternate screen
     write(STDOUT_FILENO, "\033[?25l", 6);
     write(STDOUT_FILENO, "\033[?1049h", 8);
+    // Set terminal background to pywal bg
+    std::string set_bg = "\033[48;2;" + std::to_string(bg_color.r) + ";" +
+                         std::to_string(bg_color.g) + ";" +
+                         std::to_string(bg_color.b) + "m";
+    write(STDOUT_FILENO, set_bg.c_str(), set_bg.size());
+    // Clear entire screen with bg color
+    write(STDOUT_FILENO, "\033[2J", 4);
     raw_mode_active = true;
 }
 
 void UnicodeScreen::exit_raw_mode() {
     if (!raw_mode_active) return;
-    // Show cursor, exit alternate screen, reset colors
     write(STDOUT_FILENO, "\033[?25h", 6);
     write(STDOUT_FILENO, "\033[?1049l", 8);
     write(STDOUT_FILENO, "\033[0m", 4);
@@ -47,30 +53,25 @@ void UnicodeScreen::query_terminal_size() {
         term_cols = ws.ws_col;
         term_rows = ws.ws_row;
     }
-    // Reserve bottom 4 rows for info overlay
-    int render_rows = std::max(4, term_rows - 4);
-    buf_width = term_cols;
-    buf_height = render_rows * 2;  // half-block doubles vertical resolution
+    // Reserve bottom rows for protein info
+    info_rows = 1 + (int)data.size();
+    int render_rows = std::max(4, term_rows - info_rows);
+    // Braille: 2 dots wide per cell, 4 dots tall per cell
+    buf_width = term_cols * 2;
+    buf_height = render_rows * 4;
 }
 
 // --- Pywal colors ---
 
 void UnicodeScreen::load_pywal_colors() {
-    // Default fallback: warm rainbow
     pywal_colors = {
-        {220, 50, 47},   // red
-        {203, 75, 22},   // orange
-        {181, 137, 0},   // yellow
-        {133, 153, 0},   // green
-        {42, 161, 152},  // cyan
-        {38, 139, 210},  // blue
-        {108, 113, 196}, // violet
-        {211, 54, 130},  // magenta
+        {220, 50, 47}, {203, 75, 22}, {181, 137, 0},
+        {133, 153, 0}, {42, 161, 152}, {38, 139, 210},
+        {108, 113, 196}, {211, 54, 130},
     };
     bg_color = {0, 0, 0};
     fg_color = {197, 195, 196};
 
-    // Try to read pywal colors
     const char* home = getenv("HOME");
     if (!home) return;
 
@@ -81,22 +82,18 @@ void UnicodeScreen::load_pywal_colors() {
     std::vector<RGB> wal_colors;
     std::string line;
     while (std::getline(file, line)) {
-        if (line.empty() || line[0] != '#') continue;
-        if (line.size() < 7) continue;
+        if (line.empty() || line[0] != '#' || line.size() < 7) continue;
         unsigned int r, g, b;
-        if (sscanf(line.c_str(), "#%02x%02x%02x", &r, &g, &b) == 3) {
+        if (sscanf(line.c_str(), "#%02x%02x%02x", &r, &g, &b) == 3)
             wal_colors.push_back({(uint8_t)r, (uint8_t)g, (uint8_t)b});
-        }
     }
 
     if (wal_colors.size() >= 8) {
         bg_color = wal_colors[0];
         fg_color = wal_colors[7];
-        // Use colors 1-6 for the gradient (skip bg and fg)
         pywal_colors.clear();
-        for (int i = 1; i <= 6; i++) {
+        for (int i = 1; i <= 6; i++)
             pywal_colors.push_back(wal_colors[i]);
-        }
     }
 }
 
@@ -130,16 +127,16 @@ UnicodeScreen::UnicodeScreen(const bool& show_structure, const std::string& mode
 
 UnicodeScreen::~UnicodeScreen() {
     exit_raw_mode();
-    for (Protein* p : data) delete p;
-    data.clear();
     if (vectorpointer) {
         for (size_t i = 0; i < data.size(); i++) delete[] vectorpointer[i];
         delete[] vectorpointer;
         vectorpointer = nullptr;
     }
+    for (Protein* p : data) delete p;
+    data.clear();
 }
 
-// --- Data setup (mirrors Screen interface) ---
+// --- Data setup ---
 
 void UnicodeScreen::set_protein(const std::string& in_file, int ii, const bool& show_structure) {
     Protein* protein = new Protein(in_file, chainVec.at(ii), show_structure);
@@ -151,9 +148,8 @@ void UnicodeScreen::set_protein(const std::string& in_file, int ii, const bool& 
 void UnicodeScreen::set_tmatrix() {
     size_t filenum = data.size();
     vectorpointer = new float*[filenum];
-    for (size_t i = 0; i < filenum; i++) {
+    for (size_t i = 0; i < filenum; i++)
         vectorpointer[i] = new float[3]{0, 0, 0};
-    }
 }
 
 void UnicodeScreen::set_chainfile(const std::string& chainfile, int filesize) {
@@ -208,9 +204,8 @@ void UnicodeScreen::set_utmatrix(const std::string& utmatrix, bool applyUT) {
 
 void UnicodeScreen::normalize_proteins(const std::string& utmatrix) {
     const bool hasUT = !utmatrix.empty();
-    for (size_t i = 0; i < data.size(); i++) {
+    for (size_t i = 0; i < data.size(); i++)
         data[i]->load_data(vectorpointer[i], yesUT);
-    }
     if (hasUT) set_utmatrix(utmatrix, true);
 
     global_bb = BoundingBox();
@@ -241,11 +236,11 @@ void UnicodeScreen::normalize_proteins(const std::string& utmatrix) {
 // --- Pixel operations ---
 
 void UnicodeScreen::clear_framebuffer() {
-    std::fill(framebuffer.begin(), framebuffer.end(), Pixel{bg_color.r, bg_color.g, bg_color.b, 0.0f, false});
+    std::fill(framebuffer.begin(), framebuffer.end(), Pixel{0, 0, 0, 0.0f, false});
 }
 
 RGB UnicodeScreen::depth_shade(RGB color, float brightness) {
-    brightness = std::clamp(brightness, 0.2f, 1.0f);
+    brightness = std::clamp(brightness, 0.25f, 1.0f);
     return {
         (uint8_t)(color.r * brightness),
         (uint8_t)(color.g * brightness),
@@ -256,7 +251,6 @@ RGB UnicodeScreen::depth_shade(RGB color, float brightness) {
 void UnicodeScreen::plot_pixel(int x, int y, float z, RGB color, float brightness) {
     if (x < 0 || x >= buf_width || y < 0 || y >= buf_height) return;
     int idx = y * buf_width + x;
-
     if (framebuffer[idx].active && z > framebuffer[idx].depth + 0.01f) return;
 
     RGB shaded = depth_shade(color, brightness);
@@ -282,20 +276,13 @@ void UnicodeScreen::draw_line(int x0, int y0, float z0,
     for (int i = 0; i <= steps; i++) {
         int ix = (int)(x + 0.5f);
         int iy = (int)(y + 0.5f);
+        plot_pixel(ix, iy, z, color, brightness);
 
-        // Draw main pixel + neighbors for thickness
-        float t = (steps > 0) ? (float)i / steps : 0.0f;
-        float br = brightness * (1.0f - t * 0.0f); // uniform brightness along line
-        plot_pixel(ix, iy, z, color, br);
-
-        // Thicken: draw adjacent pixels with slightly less brightness
-        if (abs(dx) >= abs(dy)) {
-            plot_pixel(ix, iy - 1, z, color, br * 0.5f);
-            plot_pixel(ix, iy + 1, z, color, br * 0.5f);
-        } else {
-            plot_pixel(ix - 1, iy, z, color, br * 0.5f);
-            plot_pixel(ix + 1, iy, z, color, br * 0.5f);
-        }
+        // Thicken lines: draw 1px border for visual weight
+        plot_pixel(ix + 1, iy, z, color, brightness * 0.6f);
+        plot_pixel(ix - 1, iy, z, color, brightness * 0.6f);
+        plot_pixel(ix, iy + 1, z, color, brightness * 0.6f);
+        plot_pixel(ix, iy - 1, z, color, brightness * 0.6f);
 
         x += xInc;
         y += yInc;
@@ -311,24 +298,32 @@ RGB UnicodeScreen::get_color_for_point(int point_idx, int total_points) {
     return interpolate_color(t);
 }
 
-// --- Auto-rotation ---
+// --- Auto-rotation (around protein centroid) ---
 
 void UnicodeScreen::auto_rotate_step() {
     if (!auto_rotate) return;
 
-    float angle = rotation_speed;
-    float cosA = cosf(angle);
-    float sinA = sinf(angle);
+    float cosA = cosf(rotation_speed);
+    float sinA = sinf(rotation_speed);
 
     for (auto* protein : data) {
-        // Compute center of bounding box
-        protein->set_bounding_box();
-        BoundingBox& bb = protein->get_bounding_box();
-        float cx = (bb.min_x + bb.max_x) * 0.5f;
-        float cy = (bb.min_y + bb.max_y) * 0.5f;
-        float cz = (bb.min_z + bb.max_z) * 0.5f;
+        // Compute centroid directly from current atom positions
+        float cx = 0, cy = 0, cz = 0;
+        int count = 0;
+        for (auto& [chainID, chain_atoms] : protein->get_atoms()) {
+            for (Atom& atom : chain_atoms) {
+                cx += atom.x;
+                cy += atom.y;
+                cz += atom.z;
+                count++;
+            }
+        }
+        if (count == 0) continue;
+        cx /= count;
+        cy /= count;
+        cz /= count;
 
-        // Y-axis rotation around center
+        // Y-axis rotation around centroid
         for (auto& [chainID, chain_atoms] : protein->get_atoms()) {
             for (Atom& atom : chain_atoms) {
                 float dx = atom.x - cx;
@@ -345,12 +340,10 @@ void UnicodeScreen::auto_rotate_step() {
 void UnicodeScreen::project() {
     float fovRads = 1.0f / tanf((FOV / zoom_level) * 0.5f / 180.0f * PI);
 
-    // Count total atoms across all proteins for global rainbow
     int global_total = 0;
-    for (auto* p : data) {
+    for (auto* p : data)
         for (const auto& [cid, atoms] : p->get_atoms())
             global_total += p->get_chain_length(cid);
-    }
 
     int global_idx = 0;
 
@@ -363,8 +356,6 @@ void UnicodeScreen::project() {
 
             int prevSX = -1, prevSY = -1;
             float prevZ = 0;
-            RGB prevColor = {0, 0, 0};
-            float prevBr = 0;
 
             for (int i = 0; i < num_atoms; i++) {
                 float* pos = chain_atoms[i].get_position();
@@ -377,152 +368,141 @@ void UnicodeScreen::project() {
                 int sx = (int)((projX + 1.0f) * 0.5f * buf_width);
                 int sy = (int)((1.0f - projY) * 0.5f * buf_height);
 
-                // Depth-based brightness
                 float min_z = target->get_scaled_min_z();
                 float max_z = target->get_scaled_max_z();
                 float zn = (max_z > min_z) ? ((z - focal_offset - min_z) / (max_z - min_z)) : 0.5f;
                 zn = std::clamp(zn, 0.0f, 1.0f);
-                float brightness = 1.0f - zn * 0.7f;  // near=1.0, far=0.3
+                float brightness = 1.0f - zn * 0.65f;
 
                 RGB color = get_color_for_point(global_idx, global_total);
 
-                if (prevSX >= 0) {
+                if (prevSX >= 0)
                     draw_line(prevSX, prevSY, prevZ, sx, sy, z, color, brightness);
-                }
 
                 prevSX = sx; prevSY = sy; prevZ = z;
-                prevColor = color; prevBr = brightness;
                 global_idx++;
             }
         }
     }
 }
 
-// --- Half-block rendering ---
+// --- Braille rendering ---
+// Each cell = 2 wide x 4 tall dots
+// Braille char = U+2800 + bitmask
+// Dot positions:  bit0=(0,0) bit1=(0,1) bit2=(0,2) bit3=(1,0)
+//                 bit4=(1,1) bit5=(1,2) bit6=(0,3) bit7=(1,3)
 
-void UnicodeScreen::render_halfblocks() {
+void UnicodeScreen::render_braille() {
     std::string out;
-    out.reserve(buf_width * term_rows * 40);  // rough estimate
+    out.reserve(term_cols * (term_rows - info_rows) * 30);
+    out += "\033[H";
 
-    out += "\033[H";  // cursor home
+    int cell_rows = buf_height / 4;
+    int cell_cols = buf_width / 2;
 
-    int render_rows = buf_height / 2;
+    // Braille dot-to-bit mapping: dot(col, row) -> bit
+    // col=0: rows 0,1,2,3 -> bits 0,1,2,6
+    // col=1: rows 0,1,2,3 -> bits 3,4,5,7
+    static const int dot_bits[2][4] = {
+        {0x01, 0x02, 0x04, 0x40},  // col 0: bits 0,1,2,6
+        {0x08, 0x10, 0x20, 0x80},  // col 1: bits 3,4,5,7
+    };
 
-    for (int row = 0; row < render_rows; row++) {
-        for (int col = 0; col < buf_width; col++) {
-            int top_idx = (row * 2) * buf_width + col;
-            int bot_idx = (row * 2 + 1) * buf_width + col;
+    for (int cr = 0; cr < cell_rows; cr++) {
+        for (int cc = 0; cc < cell_cols; cc++) {
+            int pattern = 0;
+            // Find frontmost active pixel for color
+            float best_depth = std::numeric_limits<float>::infinity();
+            RGB best_color = {0, 0, 0};
+            bool any_active = false;
 
-            Pixel& top = framebuffer[top_idx];
-            Pixel& bot = framebuffer[bot_idx];
+            for (int dc = 0; dc < 2; dc++) {
+                for (int dr = 0; dr < 4; dr++) {
+                    int px = cc * 2 + dc;
+                    int py = cr * 4 + dr;
+                    if (px >= buf_width || py >= buf_height) continue;
+                    int idx = py * buf_width + px;
+                    if (framebuffer[idx].active) {
+                        pattern |= dot_bits[dc][dr];
+                        any_active = true;
+                        if (framebuffer[idx].depth < best_depth) {
+                            best_depth = framebuffer[idx].depth;
+                            best_color = {framebuffer[idx].r, framebuffer[idx].g, framebuffer[idx].b};
+                        }
+                    }
+                }
+            }
 
-            if (!top.active && !bot.active) {
-                // Both background
-                out += "\033[48;2;";
-                out += std::to_string(bg_color.r) + ";" +
-                       std::to_string(bg_color.g) + ";" +
-                       std::to_string(bg_color.b) + "m ";
-            } else if (top.active && !bot.active) {
-                // Top pixel only: use ▀ with fg=top, bg=bg
+            if (any_active) {
+                // Set fg color + bg color, then braille char
                 out += "\033[38;2;";
-                out += std::to_string(top.r) + ";" +
-                       std::to_string(top.g) + ";" +
-                       std::to_string(top.b) + "m";
+                out += std::to_string(best_color.r) + ";";
+                out += std::to_string(best_color.g) + ";";
+                out += std::to_string(best_color.b) + "m";
                 out += "\033[48;2;";
-                out += std::to_string(bg_color.r) + ";" +
-                       std::to_string(bg_color.g) + ";" +
-                       std::to_string(bg_color.b) + "m";
-                out += "\xe2\x96\x80";  // ▀ (U+2580)
-            } else if (!top.active && bot.active) {
-                // Bottom pixel only: use ▄ with fg=bot, bg=bg
-                out += "\033[38;2;";
-                out += std::to_string(bot.r) + ";" +
-                       std::to_string(bot.g) + ";" +
-                       std::to_string(bot.b) + "m";
-                out += "\033[48;2;";
-                out += std::to_string(bg_color.r) + ";" +
-                       std::to_string(bg_color.g) + ";" +
-                       std::to_string(bg_color.b) + "m";
-                out += "\xe2\x96\x84";  // ▄ (U+2584)
+                out += std::to_string(bg_color.r) + ";";
+                out += std::to_string(bg_color.g) + ";";
+                out += std::to_string(bg_color.b) + "m";
+
+                // Encode braille: U+2800 + pattern
+                // UTF-8: 0xE2 0xA0+high 0x80+low
+                int codepoint = 0x2800 + pattern;
+                out += (char)(0xE0 | ((codepoint >> 12) & 0x0F));
+                out += (char)(0x80 | ((codepoint >> 6) & 0x3F));
+                out += (char)(0x80 | (codepoint & 0x3F));
             } else {
-                // Both active: use ▀ with fg=top, bg=bot
-                out += "\033[38;2;";
-                out += std::to_string(top.r) + ";" +
-                       std::to_string(top.g) + ";" +
-                       std::to_string(top.b) + "m";
+                // Empty cell: bg color space
                 out += "\033[48;2;";
-                out += std::to_string(bot.r) + ";" +
-                       std::to_string(bot.g) + ";" +
-                       std::to_string(bot.b) + "m";
-                out += "\xe2\x96\x80";  // ▀ (U+2580)
+                out += std::to_string(bg_color.r) + ";";
+                out += std::to_string(bg_color.g) + ";";
+                out += std::to_string(bg_color.b) + "m ";
             }
         }
-        if (row < render_rows - 1) out += "\033[0m\n";
+        if (cr < cell_rows - 1) out += "\033[0m\n";
     }
 
     out += "\033[0m";
     write(STDOUT_FILENO, out.c_str(), out.size());
 }
 
-// --- Info overlay ---
+// --- Info overlay (protein name + chain info, no controls) ---
 
 void UnicodeScreen::draw_info_overlay() {
     std::string out;
-
-    // Move to info area (below the rendered image)
     out += "\033[0m\n";
 
-    // Separator
-    std::string sep(std::min(term_cols, 60), '\xe2');
-    // Use thin line: ─ (U+2500)
-    out += "\033[38;2;" + std::to_string(fg_color.r) + ";" +
-           std::to_string(fg_color.g) + ";" +
-           std::to_string(fg_color.b) + "m";
-
-    for (int i = 0; i < std::min(term_cols, 60); i++)
-        out += "\xe2\x94\x80";  // ─
-    out += "\n";
-
-    // Protein info
     for (size_t i = 0; i < data.size(); i++) {
         auto* p = data[i];
         std::string name = p->get_file_name();
-        // Strip path
         size_t slash = name.find_last_of('/');
         if (slash != std::string::npos) name = name.substr(slash + 1);
 
-        // Color the name with first pywal gradient color
+        // Protein name in gradient color
         RGB nc = interpolate_color((float)i / std::max(1, (int)data.size() - 1));
         out += "\033[38;2;" + std::to_string(nc.r) + ";" +
                std::to_string(nc.g) + ";" +
                std::to_string(nc.b) + "m";
         out += " " + name;
 
-        // Chain/residue info in fg color
-        out += "\033[38;2;" + std::to_string(fg_color.r) + ";" +
-               std::to_string(fg_color.g) + ";" +
-               std::to_string(fg_color.b) + "m";
+        // Chain/residue summary in dimmed fg
+        out += "\033[38;2;" + std::to_string(fg_color.r * 2 / 3) + ";" +
+               std::to_string(fg_color.g * 2 / 3) + ";" +
+               std::to_string(fg_color.b * 2 / 3) + "m";
 
         auto chain_lengths = p->get_chain_length();
         auto residue_counts = p->get_residue_count();
-        out += "  ";
-        int count = 0;
+        int total_res = 0, total_chains = 0;
         for (const auto& [cid, len] : chain_lengths) {
-            int res = 0;
+            total_chains++;
             auto it = residue_counts.find(cid);
-            if (it != residue_counts.end()) res = it->second;
-            out += cid + ":" + std::to_string(res) + " ";
-            count++;
-            if (count > 8) { out += "..."; break; }
+            if (it != residue_counts.end()) total_res += it->second;
         }
-        out += "\n";
+        out += "  " + std::to_string(total_chains) + " chain" +
+               (total_chains > 1 ? "s" : "") + ", " +
+               std::to_string(total_res) + " residues";
+        out += "\033[0m";
+        if (i < data.size() - 1) out += "\n";
     }
-
-    // Controls
-    out += "\033[38;2;" + std::to_string(fg_color.r / 2) + ";" +
-           std::to_string(fg_color.g / 2) + ";" +
-           std::to_string(fg_color.b / 2) + "m";
-    out += " WASD:pan  XYZ:rotate  R/F:zoom  Space:auto  Q:quit\033[0m";
 
     write(STDOUT_FILENO, out.c_str(), out.size());
 }
@@ -530,17 +510,15 @@ void UnicodeScreen::draw_info_overlay() {
 // --- Main draw ---
 
 void UnicodeScreen::draw_screen() {
-    // Re-query terminal size each frame for resize support
     int old_w = buf_width, old_h = buf_height;
     query_terminal_size();
-    if (buf_width != old_w || buf_height != old_h) {
+    if (buf_width != old_w || buf_height != old_h)
         framebuffer.resize(buf_width * buf_height);
-    }
 
     auto_rotate_step();
     clear_framebuffer();
     project();
-    render_halfblocks();
+    render_braille();
     draw_info_overlay();
 }
 
