@@ -25,15 +25,12 @@ void UnicodeScreen::enter_raw_mode() {
     raw.c_cc[VMIN] = 0;
     raw.c_cc[VTIME] = 0;
     tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw);
-    // Hide cursor, alternate screen
     write(STDOUT_FILENO, "\033[?25l", 6);
     write(STDOUT_FILENO, "\033[?1049h", 8);
-    // Set terminal background to pywal bg
     std::string set_bg = "\033[48;2;" + std::to_string(bg_color.r) + ";" +
                          std::to_string(bg_color.g) + ";" +
                          std::to_string(bg_color.b) + "m";
     write(STDOUT_FILENO, set_bg.c_str(), set_bg.size());
-    // Clear entire screen with bg color
     write(STDOUT_FILENO, "\033[2J", 4);
     raw_mode_active = true;
 }
@@ -53,25 +50,32 @@ void UnicodeScreen::query_terminal_size() {
         term_cols = ws.ws_col;
         term_rows = ws.ws_row;
     }
-    // Reserve bottom rows for protein info
     info_rows = 1 + (int)data.size();
     int render_rows = std::max(4, term_rows - info_rows);
-    // Braille: 2 dots wide per cell, 4 dots tall per cell
     buf_width = term_cols * 2;
     buf_height = render_rows * 4;
 }
 
-// --- Pywal colors ---
+// --- Colors ---
 
-void UnicodeScreen::load_pywal_colors() {
-    pywal_colors = {
-        {220, 50, 47}, {203, 75, 22}, {181, 137, 0},
-        {133, 153, 0}, {42, 161, 152}, {38, 139, 210},
-        {108, 113, 196}, {211, 54, 130},
+void UnicodeScreen::load_colors() {
+    // Vibrant rainbow visible on any dark background
+    rainbow_colors = {
+        {255, 70, 70},    // red
+        {255, 140, 50},   // orange
+        {255, 210, 60},   // yellow
+        {80, 220, 80},    // green
+        {50, 200, 220},   // cyan
+        {80, 120, 255},   // blue
+        {160, 80, 255},   // purple
+        {255, 80, 180},   // pink
     };
-    bg_color = {0, 0, 0};
-    fg_color = {197, 195, 196};
 
+    // Default bg/fg
+    bg_color = {18, 18, 24};
+    fg_color = {180, 180, 180};
+
+    // Try to read pywal for bg/fg only
     const char* home = getenv("HOME");
     if (!home) return;
 
@@ -91,25 +95,22 @@ void UnicodeScreen::load_pywal_colors() {
     if (wal_colors.size() >= 8) {
         bg_color = wal_colors[0];
         fg_color = wal_colors[7];
-        pywal_colors.clear();
-        for (int i = 1; i <= 6; i++)
-            pywal_colors.push_back(wal_colors[i]);
     }
 }
 
 RGB UnicodeScreen::interpolate_color(float t) {
     t = std::clamp(t, 0.0f, 1.0f);
-    int n = (int)pywal_colors.size();
+    int n = (int)rainbow_colors.size();
     if (n == 0) return {255, 255, 255};
-    if (n == 1) return pywal_colors[0];
+    if (n == 1) return rainbow_colors[0];
 
     float idx = t * (n - 1);
     int i = (int)idx;
     float f = idx - i;
-    if (i >= n - 1) return pywal_colors[n - 1];
+    if (i >= n - 1) return rainbow_colors[n - 1];
 
-    const RGB& a = pywal_colors[i];
-    const RGB& b = pywal_colors[i + 1];
+    const RGB& a = rainbow_colors[i];
+    const RGB& b = rainbow_colors[i + 1];
     return {
         (uint8_t)(a.r + (b.r - a.r) * f),
         (uint8_t)(a.g + (b.g - a.g) * f),
@@ -122,7 +123,7 @@ RGB UnicodeScreen::interpolate_color(float t) {
 UnicodeScreen::UnicodeScreen(const bool& show_structure, const std::string& mode) {
     screen_show_structure = show_structure;
     screen_mode = mode;
-    load_pywal_colors();
+    load_colors();
 }
 
 UnicodeScreen::~UnicodeScreen() {
@@ -257,7 +258,7 @@ void UnicodeScreen::plot_pixel(int x, int y, float z, RGB color, float brightnes
     framebuffer[idx] = {shaded.r, shaded.g, shaded.b, z, true};
 }
 
-// --- Line drawing (Bresenham with thickness) ---
+// --- Drawing primitives ---
 
 void UnicodeScreen::draw_line(int x0, int y0, float z0,
                                int x1, int y1, float z1,
@@ -270,35 +271,43 @@ void UnicodeScreen::draw_line(int x0, int y0, float z0,
     float xInc = (float)dx / steps;
     float yInc = (float)dy / steps;
     float zInc = (z1 - z0) / steps;
-
     float x = (float)x0, y = (float)y0, z = z0;
 
     for (int i = 0; i <= steps; i++) {
         int ix = (int)(x + 0.5f);
         int iy = (int)(y + 0.5f);
         plot_pixel(ix, iy, z, color, brightness);
-
-        // Thicken lines: draw 1px border for visual weight
-        plot_pixel(ix + 1, iy, z, color, brightness * 0.6f);
-        plot_pixel(ix - 1, iy, z, color, brightness * 0.6f);
-        plot_pixel(ix, iy + 1, z, color, brightness * 0.6f);
-        plot_pixel(ix, iy - 1, z, color, brightness * 0.6f);
-
-        x += xInc;
-        y += yInc;
-        z += zInc;
+        plot_pixel(ix + 1, iy, z, color, brightness * 0.7f);
+        plot_pixel(ix - 1, iy, z, color, brightness * 0.7f);
+        plot_pixel(ix, iy + 1, z, color, brightness * 0.7f);
+        plot_pixel(ix, iy - 1, z, color, brightness * 0.7f);
+        x += xInc; y += yInc; z += zInc;
     }
 }
 
-// --- Color for backbone position ---
+void UnicodeScreen::draw_filled_circle(int cx, int cy, float z, int radius,
+                                        RGB color, float brightness) {
+    for (int dy = -radius; dy <= radius; dy++) {
+        for (int dx = -radius; dx <= radius; dx++) {
+            float dist = sqrtf((float)(dx * dx + dy * dy));
+            if (dist <= radius) {
+                // Fade at edges for smooth look
+                float edge = 1.0f - std::max(0.0f, (dist - radius + 1.5f) / 1.5f);
+                plot_pixel(cx + dx, cy + dy, z, color, brightness * edge);
+            }
+        }
+    }
+}
+
+// --- Color ---
 
 RGB UnicodeScreen::get_color_for_point(int point_idx, int total_points) {
-    if (total_points <= 1) return pywal_colors[0];
+    if (total_points <= 1) return rainbow_colors[0];
     float t = (float)point_idx / (total_points - 1);
     return interpolate_color(t);
 }
 
-// --- Auto-rotation (around protein centroid) ---
+// --- Auto-rotation (around atom centroid) ---
 
 void UnicodeScreen::auto_rotate_step() {
     if (!auto_rotate) return;
@@ -307,23 +316,17 @@ void UnicodeScreen::auto_rotate_step() {
     float sinA = sinf(rotation_speed);
 
     for (auto* protein : data) {
-        // Compute centroid directly from current atom positions
         float cx = 0, cy = 0, cz = 0;
         int count = 0;
         for (auto& [chainID, chain_atoms] : protein->get_atoms()) {
             for (Atom& atom : chain_atoms) {
-                cx += atom.x;
-                cy += atom.y;
-                cz += atom.z;
+                cx += atom.x; cy += atom.y; cz += atom.z;
                 count++;
             }
         }
         if (count == 0) continue;
-        cx /= count;
-        cy /= count;
-        cz /= count;
+        cx /= count; cy /= count; cz /= count;
 
-        // Y-axis rotation around centroid
         for (auto& [chainID, chain_atoms] : protein->get_atoms()) {
             for (Atom& atom : chain_atoms) {
                 float dx = atom.x - cx;
@@ -335,32 +338,40 @@ void UnicodeScreen::auto_rotate_step() {
     }
 }
 
-// --- Projection ---
+// --- Projection helpers ---
 
-void UnicodeScreen::project() {
-    float fovRads = 1.0f / tanf((FOV / zoom_level) * 0.5f / 180.0f * PI);
+struct ProjAtom {
+    int sx, sy;
+    float z;
+    float brightness;
+    RGB color;
+};
 
-    int global_total = 0;
+static void project_atoms(std::vector<Protein*>& data,
+                           std::vector<float>& pan_x,
+                           float zoom_level, float focal_offset,
+                           std::vector<float>& pan_y,
+                           int buf_width, int buf_height,
+                           std::vector<std::vector<ProjAtom>>& chains_out,
+                           int& global_total) {
+    global_total = 0;
     for (auto* p : data)
         for (const auto& [cid, atoms] : p->get_atoms())
             global_total += p->get_chain_length(cid);
 
+    float fovRads = 1.0f / tanf((FOV / zoom_level) * 0.5f / 180.0f * PI);
     int global_idx = 0;
 
     for (size_t ii = 0; ii < data.size(); ii++) {
         Protein* target = data[ii];
-
         for (const auto& [chainID, chain_atoms] : target->get_atoms()) {
             int num_atoms = target->get_chain_length(chainID);
             if (num_atoms == 0) continue;
 
-            int prevSX = -1, prevSY = -1;
-            float prevZ = 0;
-
+            std::vector<ProjAtom> chain;
             for (int i = 0; i < num_atoms; i++) {
                 float* pos = chain_atoms[i].get_position();
-                float x = pos[0];
-                float y = pos[1];
+                float x = pos[0], y = pos[1];
                 float z = pos[2] + focal_offset;
 
                 float projX = (x / z) * fovRads + pan_x[ii];
@@ -374,23 +385,77 @@ void UnicodeScreen::project() {
                 zn = std::clamp(zn, 0.0f, 1.0f);
                 float brightness = 1.0f - zn * 0.65f;
 
-                RGB color = get_color_for_point(global_idx, global_total);
-
-                if (prevSX >= 0)
-                    draw_line(prevSX, prevSY, prevZ, sx, sy, z, color, brightness);
-
-                prevSX = sx; prevSY = sy; prevZ = z;
+                chain.push_back({sx, sy, z, brightness, {0, 0, 0}});
                 global_idx++;
             }
+            chains_out.push_back(std::move(chain));
+        }
+    }
+}
+
+// --- View: Backbone ---
+
+void UnicodeScreen::project_backbone() {
+    std::vector<std::vector<ProjAtom>> chains;
+    int global_total;
+    project_atoms(data, pan_x, zoom_level, focal_offset, pan_y,
+                  buf_width, buf_height, chains, global_total);
+
+    int idx = 0;
+    for (auto& chain : chains) {
+        for (size_t i = 0; i < chain.size(); i++) {
+            RGB color = get_color_for_point(idx, global_total);
+            if (i > 0) {
+                draw_line(chain[i-1].sx, chain[i-1].sy, chain[i-1].z,
+                          chain[i].sx, chain[i].sy, chain[i].z,
+                          color, chain[i].brightness);
+            }
+            idx++;
+        }
+    }
+}
+
+// --- View: Dots ---
+
+void UnicodeScreen::project_dots() {
+    std::vector<std::vector<ProjAtom>> chains;
+    int global_total;
+    project_atoms(data, pan_x, zoom_level, focal_offset, pan_y,
+                  buf_width, buf_height, chains, global_total);
+
+    int idx = 0;
+    for (auto& chain : chains) {
+        for (auto& a : chain) {
+            RGB color = get_color_for_point(idx, global_total);
+            // Draw a small cross/diamond at each atom
+            draw_filled_circle(a.sx, a.sy, a.z, 2, color, a.brightness);
+            idx++;
+        }
+    }
+}
+
+// --- View: Surface ---
+
+void UnicodeScreen::project_surface() {
+    std::vector<std::vector<ProjAtom>> chains;
+    int global_total;
+    project_atoms(data, pan_x, zoom_level, focal_offset, pan_y,
+                  buf_width, buf_height, chains, global_total);
+
+    // Larger radius circles that overlap to form surface
+    // Scale radius by depth (closer = bigger)
+    int idx = 0;
+    for (auto& chain : chains) {
+        for (auto& a : chain) {
+            RGB color = get_color_for_point(idx, global_total);
+            int radius = (int)(3.0f + a.brightness * 3.0f);  // 3-6 dots
+            draw_filled_circle(a.sx, a.sy, a.z, radius, color, a.brightness);
+            idx++;
         }
     }
 }
 
 // --- Braille rendering ---
-// Each cell = 2 wide x 4 tall dots
-// Braille char = U+2800 + bitmask
-// Dot positions:  bit0=(0,0) bit1=(0,1) bit2=(0,2) bit3=(1,0)
-//                 bit4=(1,1) bit5=(1,2) bit6=(0,3) bit7=(1,3)
 
 void UnicodeScreen::render_braille() {
     std::string out;
@@ -400,18 +465,14 @@ void UnicodeScreen::render_braille() {
     int cell_rows = buf_height / 4;
     int cell_cols = buf_width / 2;
 
-    // Braille dot-to-bit mapping: dot(col, row) -> bit
-    // col=0: rows 0,1,2,3 -> bits 0,1,2,6
-    // col=1: rows 0,1,2,3 -> bits 3,4,5,7
     static const int dot_bits[2][4] = {
-        {0x01, 0x02, 0x04, 0x40},  // col 0: bits 0,1,2,6
-        {0x08, 0x10, 0x20, 0x80},  // col 1: bits 3,4,5,7
+        {0x01, 0x02, 0x04, 0x40},
+        {0x08, 0x10, 0x20, 0x80},
     };
 
     for (int cr = 0; cr < cell_rows; cr++) {
         for (int cc = 0; cc < cell_cols; cc++) {
             int pattern = 0;
-            // Find frontmost active pixel for color
             float best_depth = std::numeric_limits<float>::infinity();
             RGB best_color = {0, 0, 0};
             bool any_active = false;
@@ -434,7 +495,6 @@ void UnicodeScreen::render_braille() {
             }
 
             if (any_active) {
-                // Set fg color + bg color, then braille char
                 out += "\033[38;2;";
                 out += std::to_string(best_color.r) + ";";
                 out += std::to_string(best_color.g) + ";";
@@ -443,15 +503,11 @@ void UnicodeScreen::render_braille() {
                 out += std::to_string(bg_color.r) + ";";
                 out += std::to_string(bg_color.g) + ";";
                 out += std::to_string(bg_color.b) + "m";
-
-                // Encode braille: U+2800 + pattern
-                // UTF-8: 0xE2 0xA0+high 0x80+low
                 int codepoint = 0x2800 + pattern;
                 out += (char)(0xE0 | ((codepoint >> 12) & 0x0F));
                 out += (char)(0x80 | ((codepoint >> 6) & 0x3F));
                 out += (char)(0x80 | (codepoint & 0x3F));
             } else {
-                // Empty cell: bg color space
                 out += "\033[48;2;";
                 out += std::to_string(bg_color.r) + ";";
                 out += std::to_string(bg_color.g) + ";";
@@ -465,7 +521,18 @@ void UnicodeScreen::render_braille() {
     write(STDOUT_FILENO, out.c_str(), out.size());
 }
 
-// --- Info overlay (protein name + chain info, no controls) ---
+// --- View mode name ---
+
+const char* UnicodeScreen::view_mode_name() {
+    switch (view_mode) {
+        case ViewMode::BACKBONE: return "backbone";
+        case ViewMode::DOTS:    return "dots";
+        case ViewMode::SURFACE: return "surface";
+    }
+    return "unknown";
+}
+
+// --- Info overlay ---
 
 void UnicodeScreen::draw_info_overlay() {
     std::string out;
@@ -477,14 +544,13 @@ void UnicodeScreen::draw_info_overlay() {
         size_t slash = name.find_last_of('/');
         if (slash != std::string::npos) name = name.substr(slash + 1);
 
-        // Protein name in gradient color
         RGB nc = interpolate_color((float)i / std::max(1, (int)data.size() - 1));
         out += "\033[38;2;" + std::to_string(nc.r) + ";" +
                std::to_string(nc.g) + ";" +
                std::to_string(nc.b) + "m";
         out += " " + name;
 
-        // Chain/residue summary in dimmed fg
+        // Dimmed summary
         out += "\033[38;2;" + std::to_string(fg_color.r * 2 / 3) + ";" +
                std::to_string(fg_color.g * 2 / 3) + ";" +
                std::to_string(fg_color.b * 2 / 3) + "m";
@@ -500,6 +566,13 @@ void UnicodeScreen::draw_info_overlay() {
         out += "  " + std::to_string(total_chains) + " chain" +
                (total_chains > 1 ? "s" : "") + ", " +
                std::to_string(total_res) + " residues";
+
+        // View mode indicator (dimmer)
+        out += "  \033[38;2;" + std::to_string(fg_color.r / 3) + ";" +
+               std::to_string(fg_color.g / 3) + ";" +
+               std::to_string(fg_color.b / 3) + "m";
+        out += "[" + std::string(view_mode_name()) + "]";
+
         out += "\033[0m";
         if (i < data.size() - 1) out += "\n";
     }
@@ -517,7 +590,13 @@ void UnicodeScreen::draw_screen() {
 
     auto_rotate_step();
     clear_framebuffer();
-    project();
+
+    switch (view_mode) {
+        case ViewMode::BACKBONE: project_backbone(); break;
+        case ViewMode::DOTS:     project_dots();     break;
+        case ViewMode::SURFACE:  project_surface();  break;
+    }
+
     render_braille();
     draw_info_overlay();
 }
@@ -538,6 +617,12 @@ bool UnicodeScreen::handle_input() {
         case '1': case '2': case '3': case '4': case '5': case '6':
             if (c - '0' <= (int)data.size()) structNum = c - '1';
             break;
+        case 'v': case 'V': {
+            int m = (int)view_mode;
+            m = (m + 1) % 3;
+            view_mode = (ViewMode)m;
+            break;
+        }
         case 'a': case 'A':
             if (structNum >= 0) pan_x[structNum] -= pan_step;
             else for (auto& px : pan_x) px -= pan_step;
