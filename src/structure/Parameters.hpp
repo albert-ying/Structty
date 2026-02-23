@@ -14,6 +14,7 @@ class Parameters{
         bool show_structure = false;
         bool predict_structure = false;
         bool sixel = false;
+        bool unicode = false;
         bool arg_okay = true;
         int width = 3;
         int height = 3;
@@ -75,5 +76,8 @@ class Parameters{
         }
         bool get_sixel(){
             return sixel;
+        }
+        bool get_unicode(){
+            return unicode;
         }
 };
