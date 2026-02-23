@@ -58,24 +58,34 @@ void UnicodeScreen::query_terminal_size() {
 
 // --- Colors ---
 
-void UnicodeScreen::load_colors() {
-    // Vibrant rainbow visible on any dark background
-    rainbow_colors = {
-        {255, 70, 70},    // red
-        {255, 140, 50},   // orange
-        {255, 210, 60},   // yellow
-        {80, 220, 80},    // green
-        {50, 200, 220},   // cyan
-        {80, 120, 255},   // blue
-        {160, 80, 255},   // purple
-        {255, 80, 180},   // pink
-    };
+static RGB boost_color(RGB c, RGB bg) {
+    // Ensure color is visible against bg by guaranteeing minimum contrast
+    // Compute perceived luminance difference
+    float c_lum = 0.299f * c.r + 0.587f * c.g + 0.114f * c.b;
+    float bg_lum = 0.299f * bg.r + 0.587f * bg.g + 0.114f * bg.b;
+    float diff = std::abs(c_lum - bg_lum);
 
-    // Default bg/fg
+    if (diff < 80.0f) {
+        // Too close to bg — boost away from it
+        float scale = (bg_lum < 128.0f) ? 1.6f : 0.6f;
+        return {
+            (uint8_t)std::clamp((int)(c.r * scale), 0, 255),
+            (uint8_t)std::clamp((int)(c.g * scale), 0, 255),
+            (uint8_t)std::clamp((int)(c.b * scale), 0, 255),
+        };
+    }
+    return c;
+}
+
+void UnicodeScreen::load_colors() {
+    // Fallback
+    rainbow_colors = {
+        {255, 70, 70}, {255, 140, 50}, {255, 210, 60}, {80, 220, 80},
+        {50, 200, 220}, {80, 120, 255}, {160, 80, 255}, {255, 80, 180},
+    };
     bg_color = {18, 18, 24};
     fg_color = {180, 180, 180};
 
-    // Try to read pywal for bg/fg only
     const char* home = getenv("HOME");
     if (!home) return;
 
@@ -92,9 +102,22 @@ void UnicodeScreen::load_colors() {
             wal_colors.push_back({(uint8_t)r, (uint8_t)g, (uint8_t)b});
     }
 
-    if (wal_colors.size() >= 8) {
+    if (wal_colors.size() >= 16) {
         bg_color = wal_colors[0];
         fg_color = wal_colors[7];
+        // Use all pywal accent colors (1-6 + 8 for contrast)
+        // Boost each to ensure visibility against bg
+        rainbow_colors.clear();
+        // color8 first (typically most saturated/distinct)
+        rainbow_colors.push_back(boost_color(wal_colors[8], bg_color));
+        for (int i = 1; i <= 6; i++)
+            rainbow_colors.push_back(boost_color(wal_colors[i], bg_color));
+    } else if (wal_colors.size() >= 8) {
+        bg_color = wal_colors[0];
+        fg_color = wal_colors[7];
+        rainbow_colors.clear();
+        for (int i = 1; i <= 6; i++)
+            rainbow_colors.push_back(boost_color(wal_colors[i], bg_color));
     }
 }
 
@@ -241,7 +264,7 @@ void UnicodeScreen::clear_framebuffer() {
 }
 
 RGB UnicodeScreen::depth_shade(RGB color, float brightness) {
-    brightness = std::clamp(brightness, 0.25f, 1.0f);
+    brightness = std::clamp(brightness, 0.45f, 1.0f);
     return {
         (uint8_t)(color.r * brightness),
         (uint8_t)(color.g * brightness),
@@ -415,23 +438,111 @@ void UnicodeScreen::project_backbone() {
     }
 }
 
-// --- View: Dots ---
+// --- View: Surface Grid (wireframe mesh) ---
 
-void UnicodeScreen::project_dots() {
+void UnicodeScreen::project_grid() {
     std::vector<std::vector<ProjAtom>> chains;
     int global_total;
     project_atoms(data, pan_x, zoom_level, focal_offset, pan_y,
                   buf_width, buf_height, chains, global_total);
 
-    int idx = 0;
-    for (auto& chain : chains) {
-        for (auto& a : chain) {
-            RGB color = get_color_for_point(idx, global_total);
-            // Draw a small cross/diamond at each atom
-            draw_filled_circle(a.sx, a.sy, a.z, 2, color, a.brightness);
-            idx++;
+    // Flatten all projected atoms with their colors
+    struct FlatAtom {
+        int sx, sy;
+        float z, brightness;
+        float x3d, y3d, z3d;  // 3D position for neighbor search
+        RGB color;
+    };
+    std::vector<FlatAtom> all_atoms;
+
+    // Collect 3D positions alongside projected positions
+    int global_idx = 0;
+    for (size_t ii = 0; ii < data.size(); ii++) {
+        Protein* target = data[ii];
+        int chain_offset = 0;
+        for (const auto& [chainID, chain_atoms] : target->get_atoms()) {
+            int num_atoms = target->get_chain_length(chainID);
+            for (int i = 0; i < num_atoms; i++) {
+                float* pos = chain_atoms[i].get_position();
+                // Find the matching projected atom
+                if (chain_offset < (int)chains.size() && i < (int)chains[chain_offset].size()) {
+                    auto& pa = chains[chain_offset][i];
+                    RGB color = get_color_for_point(global_idx, global_total);
+                    all_atoms.push_back({pa.sx, pa.sy, pa.z, pa.brightness,
+                                         pos[0], pos[1], pos[2], color});
+                }
+                global_idx++;
+            }
+            chain_offset++;
         }
     }
+
+    // Compute average sequential distance for threshold
+    float avg_dist = 0;
+    int dist_count = 0;
+    for (size_t i = 1; i < all_atoms.size(); i++) {
+        float dx = all_atoms[i].x3d - all_atoms[i-1].x3d;
+        float dy = all_atoms[i].y3d - all_atoms[i-1].y3d;
+        float dz = all_atoms[i].z3d - all_atoms[i-1].z3d;
+        float d = sqrtf(dx*dx + dy*dy + dz*dz);
+        if (d > 0.001f && d < 0.5f) {  // reasonable sequential distance
+            avg_dist += d;
+            dist_count++;
+        }
+    }
+    float threshold = (dist_count > 0) ? (avg_dist / dist_count) * 2.5f : 0.15f;
+
+    int n = (int)all_atoms.size();
+
+    // Draw backbone connections (sequential)
+    global_idx = 0;
+    for (auto& chain : chains) {
+        for (size_t i = 1; i < chain.size(); i++) {
+            int ai = global_idx + (int)i - 1;
+            int bi = global_idx + (int)i;
+            if (ai >= 0 && ai < n && bi < n) {
+                RGB color = all_atoms[bi].color;
+                float br = (all_atoms[ai].brightness + all_atoms[bi].brightness) * 0.5f;
+                draw_line(all_atoms[ai].sx, all_atoms[ai].sy, all_atoms[ai].z,
+                          all_atoms[bi].sx, all_atoms[bi].sy, all_atoms[bi].z,
+                          color, br);
+            }
+        }
+        global_idx += (int)chain.size();
+    }
+
+    // Draw cross-connections (nearby non-sequential atoms)
+    for (int i = 0; i < n; i++) {
+        for (int j = i + 3; j < n; j++) {  // skip immediate neighbors
+            float dx = all_atoms[i].x3d - all_atoms[j].x3d;
+            float dy = all_atoms[i].y3d - all_atoms[j].y3d;
+            float dz = all_atoms[i].z3d - all_atoms[j].z3d;
+            float dist = sqrtf(dx*dx + dy*dy + dz*dz);
+            if (dist < threshold) {
+                RGB color = all_atoms[j].color;
+                float br = (all_atoms[i].brightness + all_atoms[j].brightness) * 0.5f;
+                // Thinner cross-links (draw without thickness expansion)
+                int ddx = all_atoms[j].sx - all_atoms[i].sx;
+                int ddy = all_atoms[j].sy - all_atoms[i].sy;
+                int steps = std::max(abs(ddx), abs(ddy));
+                if (steps == 0) continue;
+                float xInc = (float)ddx / steps;
+                float yInc = (float)ddy / steps;
+                float zInc = (all_atoms[j].z - all_atoms[i].z) / steps;
+                float px = (float)all_atoms[i].sx, py = (float)all_atoms[i].sy;
+                float pz = all_atoms[i].z;
+                for (int s = 0; s <= steps; s++) {
+                    plot_pixel((int)(px + 0.5f), (int)(py + 0.5f), pz, color, br * 0.7f);
+                    px += xInc; py += yInc; pz += zInc;
+                }
+            }
+        }
+    }
+
+    // Draw dots at atom positions
+    for (int i = 0; i < n; i++)
+        draw_filled_circle(all_atoms[i].sx, all_atoms[i].sy, all_atoms[i].z,
+                           1, all_atoms[i].color, all_atoms[i].brightness);
 }
 
 // --- View: Surface ---
@@ -526,7 +637,7 @@ void UnicodeScreen::render_braille() {
 const char* UnicodeScreen::view_mode_name() {
     switch (view_mode) {
         case ViewMode::BACKBONE: return "backbone";
-        case ViewMode::DOTS:    return "dots";
+        case ViewMode::GRID:    return "grid";
         case ViewMode::SURFACE: return "surface";
     }
     return "unknown";
@@ -593,7 +704,7 @@ void UnicodeScreen::draw_screen() {
 
     switch (view_mode) {
         case ViewMode::BACKBONE: project_backbone(); break;
-        case ViewMode::DOTS:     project_dots();     break;
+        case ViewMode::GRID:     project_grid();     break;
         case ViewMode::SURFACE:  project_surface();  break;
     }
 

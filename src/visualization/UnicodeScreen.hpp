@@ -21,7 +21,7 @@ struct Pixel {
 
 enum class ViewMode {
     BACKBONE,   // lines connecting CA atoms
-    DOTS,       // atom positions as dot clusters
+    GRID,       // wireframe mesh connecting nearby atoms
     SURFACE,    // filled circles per atom (surface-like)
 };
 
@@ -84,7 +84,7 @@ private:
 
     void auto_rotate_step();
     void project_backbone();
-    void project_dots();
+    void project_grid();
     void project_surface();
     void clear_framebuffer();
 
